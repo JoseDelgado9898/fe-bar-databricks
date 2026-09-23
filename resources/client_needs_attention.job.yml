@@ -1,0 +1,11 @@
+resources:
+  jobs:
+    client_needs_attention_training:
+      name: client_needs_attention_training
+      tasks:
+        - task_key: train_logistic_classifier
+          # No cluster spec => runs on serverless compute.
+          notebook_task:
+            notebook_path: ../ml/client_needs_attention.py
+            base_parameters:
+              catalog: ${var.catalog}

@@ -1,0 +1,28 @@
+bundle:
+  name: wealth_advisor_worklist
+
+include:
+  - resources/*.yml
+
+# Local tooling (data generator, venv, sample parquet) — never upload on deploy.
+sync:
+  exclude:
+    - data-gen/
+
+variables:
+  catalog:
+    description: Target Unity Catalog
+    default: fe-bar-josed
+  bronze_schema:
+    description: Schema for bronze tables
+    default: bronze
+  landing_path:
+    description: Root of the raw landing zone on the UC volume
+    default: /Volumes/fe-bar-josed/bronze/landing_zone
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-18bfdd02-fc46.cloud.databricks.com

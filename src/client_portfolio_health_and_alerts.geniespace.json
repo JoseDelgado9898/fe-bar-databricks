@@ -1,0 +1,163 @@
+{
+  "data_sources": {
+    "tables": [
+      {
+        "column_configs": [
+          {
+            "column_name": "account_id",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "account_type",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "account_value",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "advisor_id",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "cash_weight",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "client_id",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "has_concentrated_drop",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "max_drift",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "model_portfolio",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "taxable_unrealized_loss",
+            "enable_format_assistance": true
+          }
+        ],
+        "identifier": "fe-bar-josed.gold.account_health"
+      },
+      {
+        "column_configs": [
+          {
+            "column_name": "advisor_email",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "advisor_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "age",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "cash_weight",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "client_id",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "email",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "first_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_cash_drag",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_concentrated_drop",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_drift",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_review_overdue",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_rmd",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flag_tax_loss_harvest",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "last_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "last_review_date",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "max_drift",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "needs_attention",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "num_accounts",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "portfolio_value",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "priority_score",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "reason",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "risk_profile",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "state",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "taxable_unrealized_loss",
+            "enable_format_assistance": true
+          }
+        ],
+        "identifier": "fe-bar-josed.gold.client_worklist"
+      }
+    ]
+  },
+  "version": 2
+}

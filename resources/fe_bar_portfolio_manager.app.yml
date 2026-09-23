@@ -1,0 +1,12 @@
+resources:
+  apps:
+    fe_bar_portfolio_manager:
+      name: fe-bar-portfolio-manager
+      description: App created by assistant
+      source_code_path: ../app
+      resources:
+        - name: database
+          postgres:
+            branch: projects/fe-bar/branches/production
+            database: projects/fe-bar/branches/production/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE

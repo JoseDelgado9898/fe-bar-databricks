@@ -1,0 +1,15 @@
+command:
+  - python
+  - app.py
+
+env:
+  - name: ENDPOINT_NAME
+    value: "projects/fe-bar/branches/production/endpoints/primary"
+  - name: PGHOST
+    value: "ep-super-tree-d283ymp5.database.us-east-1.cloud.databricks.com"
+  - name: PGDATABASE
+    value: "databricks_postgres"
+  - name: PGPORT
+    value: "5432"
+  - name: PGSSLMODE
+    value: "require"

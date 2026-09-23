@@ -1,0 +1,7 @@
+resources:
+  genie_spaces:
+    client_portfolio_health_and_alerts:
+      title: "Client Portfolio Health and Alerts"
+      warehouse_id: 0056eba6984c75c2
+      file_path: ../src/client_portfolio_health_and_alerts.geniespace.json
+      parent_path: /Workspace/Users/jose.delgado@databricks.com
