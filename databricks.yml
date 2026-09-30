@@ -19,6 +19,9 @@ variables:
   landing_path:
     description: Root of the raw landing zone on the UC volume
     default: /Volumes/fe-bar-josed/bronze/landing_zone
+  serving_endpoint_name:
+    description: Model Serving endpoint for client_needs_attention what-if scoring
+    default: client-needs-attention
 
 targets:
   dev:

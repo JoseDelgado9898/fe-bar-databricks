@@ -1,4 +1,5 @@
 import os
+from io import StringIO
 import logging
 import pandas as pd
 import plotly.express as px
@@ -92,6 +93,51 @@ def load_accounts():
 
 
 # ════════════════════════════════════════════════════════════════
+# Model Serving — client_needs_attention what-if scoring
+# ════════════════════════════════════════════════════════════════
+SERVING_ENDPOINT = os.environ.get("SERVING_ENDPOINT", "")
+
+
+def score(records):
+    """Score model-input records on the serving endpoint; returns P(needs_attention) per row."""
+    resp = w.serving_endpoints.query(name=SERVING_ENDPOINT, dataframe_records=records)
+    # Model serves predict_proba -> [P(False), P(True)] per row
+    return [row[1] for row in resp.predictions]
+
+
+def model_record(c, accounts):
+    """Build the model input for one client row (mirrors the training notebook's features)."""
+    accts = accounts[accounts["client_id"] == c["client_id"]] if not accounts.empty else pd.DataFrame()
+    has_ira = bool((accts.get("account_type", pd.Series(dtype=str)) == "Traditional IRA").any())
+    days = (pd.Timestamp.today().normalize() - pd.to_datetime(c["last_review_date"]).tz_localize(None)).days
+    return {
+        "age": float(c["age"]),
+        "portfolio_value": float(c["portfolio_value"]),
+        "num_accounts": float(c["num_accounts"]),
+        "max_drift": float(c["max_drift"]),
+        "cash_weight": float(c["cash_weight"]),
+        "taxable_unrealized_loss": float(c["taxable_unrealized_loss"]),
+        "days_since_last_review": float(days),
+        "has_concentrated_drop": int(bool(c["flag_concentrated_drop"])),
+        "has_traditional_ira": int(has_ira),
+        "state": str(c["state"]),
+        "risk_profile": str(c["risk_profile"]),
+    }
+
+
+def rule_flags(r):
+    """The gold-layer rules (src/gold/client_worklist.sql) applied to a model record."""
+    return {
+        "Concentrated Drop": bool(r["has_concentrated_drop"]),
+        "Drift": r["max_drift"] > 0.10,
+        "Tax Loss Harvest": r["taxable_unrealized_loss"] < -2000,
+        "Rmd": r["age"] >= 73 and bool(r["has_traditional_ira"]),
+        "Cash Drag": r["cash_weight"] > 0.12,
+        "Review Overdue": r["days_since_last_review"] > 365,
+    }
+
+
+# ════════════════════════════════════════════════════════════════
 # Dash app
 # ════════════════════════════════════════════════════════════════
 app = Dash(
@@ -176,6 +222,7 @@ app.layout = html.Div([
             dbc.Tab(label="Account Health", tab_id="t-ah"),
             dbc.Tab(label="At-Risk Accounts", tab_id="t-risk"),
             dbc.Tab(label="Portfolio Analytics", tab_id="t-analytics"),
+            dbc.Tab(label="What-If", tab_id="t-whatif"),
         ], id="tabs", active_tab="t-wl"),
         html.Div(id="tab-body", className="mt-3"),
     ], fluid=True),
@@ -217,7 +264,7 @@ def cb_load(_):
 def _filter(cj, adv, risk, state, attn):
     if not cj:
         return pd.DataFrame()
-    df = pd.read_json(cj, orient="split")
+    df = pd.read_json(StringIO(cj), orient="split")
     if adv:
         df = df[df["advisor_name"] == adv]
     if risk:
@@ -268,8 +315,8 @@ def cb_kpis(cj, adv, risk, st, attn):
 )
 def cb_tab(tab, cj, aj, adv, risk, st, attn, sel):
     clients = _filter(cj, adv, risk, st, attn)
-    accounts = pd.read_json(aj, orient="split") if aj else pd.DataFrame()
-    all_clients = pd.read_json(cj, orient="split") if cj else pd.DataFrame()
+    accounts = pd.read_json(StringIO(aj), orient="split") if aj else pd.DataFrame()
+    all_clients = pd.read_json(StringIO(cj), orient="split") if cj else pd.DataFrame()
 
     if tab == "t-wl":
         return _render_worklist(clients)
@@ -279,6 +326,8 @@ def cb_tab(tab, cj, aj, adv, risk, st, attn, sel):
         return _render_risk(clients)
     if tab == "t-analytics":
         return _render_analytics(clients, accounts)
+    if tab == "t-whatif":
+        return _render_whatif(sel, all_clients, accounts)
     return html.P("Select a tab.")
 
 
@@ -516,6 +565,129 @@ def _render_analytics(clients, accounts):
             figs.append(dbc.Col(dcc.Graph(figure=f6), md=6))
 
     return dbc.Row(figs, className="g-3")
+
+
+# ── What-If ──────────────────────────────────────────────────────
+def _slider(sid, label, lo, hi, step, value, fmt):
+    return html.Div([
+        html.Label(label, className="fw-semibold small"),
+        dcc.Slider(
+            id=sid, min=lo, max=hi, step=step, value=min(max(value, lo), hi),
+            marks=None, tooltip={"placement": "bottom", "always_visible": True, "template": fmt},
+        ),
+    ], className="mb-3")
+
+
+def _render_whatif(client_id, all_clients, accounts):
+    if not SERVING_ENDPOINT:
+        return dbc.Alert("SERVING_ENDPOINT is not configured for this app.", color="warning")
+    if all_clients.empty:
+        return html.P("No data.", className="text-muted")
+
+    picker = dbc.Select(
+        id="wi-client",
+        options=[{"label": f"{r.first_name} {r.last_name} ({r.client_id})", "value": r.client_id}
+                 for r in all_clients.sort_values("priority_score", ascending=False).itertuples()],
+        value=client_id, placeholder="Select a client to model...", className="mb-3",
+    )
+    crow = all_clients[all_clients["client_id"] == client_id] if client_id else pd.DataFrame()
+    if crow.empty:
+        return html.Div([picker, dbc.Alert(
+            [html.I(className="bi bi-info-circle me-2"),
+             "Pick a client (or select one in the Worklist) to run what-if scenarios."],
+            color="info",
+        )])
+
+    base = model_record(crow.iloc[0], accounts)
+    controls = dbc.Card(dbc.CardBody([
+        html.H6("Scenario levers", className="mb-3"),
+        _slider("wi-drift", "Max drift from model", 0, 0.5, 0.01, base["max_drift"], "{value}"),
+        _slider("wi-cash", "Cash weight", 0, 0.5, 0.01, base["cash_weight"], "{value}"),
+        _slider("wi-loss", "Taxable unrealized loss ($)", -200000, 0, 500,
+                base["taxable_unrealized_loss"], "${value}"),
+        _slider("wi-days", "Days since last review", 0, 1000, 5,
+                base["days_since_last_review"], "{value} days"),
+        dbc.Switch(id="wi-conc", label="Concentrated position drop",
+                   value=bool(base["has_concentrated_drop"])),
+    ]), className="shadow-sm")
+
+    return html.Div([
+        picker,
+        dcc.Store(id="wi-base", data=base),
+        dbc.Row([
+            dbc.Col(controls, md=5),
+            dbc.Col(dcc.Loading(html.Div(id="wi-result")), md=7),
+        ], className="g-3"),
+    ])
+
+
+@callback(
+    Output("s-sel-client", "data", allow_duplicate=True),
+    Input("wi-client", "value"),
+    prevent_initial_call=True,
+)
+def cb_whatif_pick(client_id):
+    return client_id or no_update
+
+
+@callback(
+    Output("wi-result", "children"),
+    Input("wi-drift", "value"),
+    Input("wi-cash", "value"),
+    Input("wi-loss", "value"),
+    Input("wi-days", "value"),
+    Input("wi-conc", "value"),
+    State("wi-base", "data"),
+)
+def cb_whatif_score(drift, cash, loss, days, conc, base):
+    if not base:
+        return no_update
+    scen = {**base, "max_drift": float(drift), "cash_weight": float(cash),
+            "taxable_unrealized_loss": float(loss), "days_since_last_review": float(days),
+            "has_concentrated_drop": int(bool(conc))}
+    try:
+        p_base, p_scen = score([base, scen])
+    except Exception as exc:
+        log.warning("Serving endpoint query failed: %s", exc)
+        return dbc.Alert(
+            [html.I(className="bi bi-hourglass-split me-2"),
+             f"Couldn't reach model endpoint '{SERVING_ENDPOINT}'. It scales to zero when idle — "
+             "if it's waking up, move a slider again in a minute."],
+            color="warning",
+        )
+
+    delta = p_scen - p_base
+    delta_color = COLORS["danger"] if delta > 0 else COLORS["success"] if delta < 0 else COLORS["primary"]
+    fig = px.bar(
+        x=["Current", "Scenario"], y=[p_base, p_scen],
+        color=["Current", "Scenario"],
+        color_discrete_sequence=[COLORS["accent"], delta_color],
+        labels={"x": "", "y": "P(needs attention)"},
+    )
+    fig.update_layout(template="plotly_white", height=300, showlegend=False, yaxis_range=[0, 1])
+    fig.update_yaxes(tickformat=".0%")
+
+    base_flags, scen_flags = rule_flags(base), rule_flags(scen)
+    def _badge_text(name, on):
+        if on == base_flags[name]:
+            return name
+        return f"{name} (new)" if on else f"{name} (cleared)"
+
+    badges = [
+        dbc.Badge(_badge_text(name, on), color="danger" if on else "secondary", className="me-1 mb-1")
+        for name, on in scen_flags.items()
+    ]
+
+    return html.Div([
+        dbc.Row([
+            dbc.Col(kpi_card("Current risk", f"{p_base:.0%}", "bi-person-fill", COLORS["accent"]), md=4),
+            dbc.Col(kpi_card("Scenario risk", f"{p_scen:.0%}", "bi-sliders", delta_color), md=4),
+            dbc.Col(kpi_card("Change", f"{delta:+.0%}", "bi-arrow-left-right", delta_color), md=4),
+        ], className="g-3 mb-3"),
+        dcc.Graph(figure=fig),
+        html.P([html.Strong("Rule flags under scenario: ")] + badges, className="mt-2"),
+        html.P(f"Model: {SERVING_ENDPOINT}", className="text-muted small"),
+    ])
 
 
 # ════════════════════════════════════════════════════════════════

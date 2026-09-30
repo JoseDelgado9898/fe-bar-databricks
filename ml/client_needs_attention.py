@@ -11,8 +11,10 @@
 # Catalog is supplied by the DAB job (base_parameters.catalog -> ${var.catalog}).
 # Defaults to fe-bar-josed so the notebook also runs standalone in the dev workspace.
 dbutils.widgets.text("catalog", "fe-bar-josed", "Unity Catalog")
+dbutils.widgets.text("serving_endpoint", "client-needs-attention", "Serving endpoint")
 catalog = dbutils.widgets.get("catalog")
-print(f"Using catalog: {catalog}")
+serving_endpoint = dbutils.widgets.get("serving_endpoint")
+print(f"Using catalog: {catalog} | serving endpoint: {serving_endpoint}")
 
 # COMMAND ----------
 
@@ -20,8 +22,23 @@ print(f"Using catalog: {catalog}")
 import pandas as pd
 import numpy as np
 
-# Load from Unity Catalog (catalog backtick-quoted to tolerate a hyphen in the name)
-df_spark = spark.sql(f"SELECT * FROM `{catalog}`.gold.client_worklist")
+# Load from Unity Catalog (catalog backtick-quoted to tolerate a hyphen in the name).
+# Only raw client state is selected — the derived flags / priority_score are the rule that
+# defines the target, so training on them would just memorise it and make what-if useless.
+df_spark = spark.sql(f"""
+  SELECT cw.client_id, cw.age, cw.state, cw.risk_profile,
+         cw.portfolio_value, cw.num_accounts, cw.max_drift, cw.cash_weight,
+         cw.taxable_unrealized_loss, cw.last_review_date,
+         cw.flag_concentrated_drop AS has_concentrated_drop,
+         coalesce(ira.has_traditional_ira, false) AS has_traditional_ira,
+         cw.needs_attention
+  FROM `{catalog}`.gold.client_worklist cw
+  LEFT JOIN (
+    SELECT client_id, bool_or(account_type = 'Traditional IRA') AS has_traditional_ira
+    FROM `{catalog}`.gold.account_health
+    GROUP BY client_id
+  ) ira ON cw.client_id = ira.client_id
+""")
 df = df_spark.toPandas()
 
 print(f"Dataset shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
@@ -36,24 +53,22 @@ display(df.head(5))
 # COMMAND ----------
 
 # DBTITLE 1,Feature Engineering & EDA
-# Compute days since last review
-reference_date = pd.Timestamp("2026-09-23")
+# Compute days since last review (relative to today — the app does the same when scoring)
+reference_date = pd.Timestamp.today().normalize()
 df["days_since_last_review"] = (reference_date - pd.to_datetime(df["last_review_date"])).dt.days
 
-# Cast boolean flags to int
-bool_cols = [
-    "flag_concentrated_drop", "flag_drift", "flag_tax_loss_harvest",
-    "flag_rmd", "flag_cash_drag", "flag_review_overdue",
-]
+# Cast boolean inputs to int
+bool_cols = ["has_concentrated_drop", "has_traditional_ira"]
 for col in bool_cols:
     df[col] = df[col].astype(int)
 
 # Define feature groups
 numeric_features = [
     "age", "portfolio_value", "num_accounts", "max_drift",
-    "cash_weight", "taxable_unrealized_loss", "priority_score",
-    "days_since_last_review",
+    "cash_weight", "taxable_unrealized_loss", "days_since_last_review",
 ]
+# Numerics as float so the serving signature accepts any JSON number from the app
+df[numeric_features] = df[numeric_features].astype(float)
 categorical_features = ["state", "risk_profile"]
 all_features = numeric_features + bool_cols + categorical_features
 target = "needs_attention"
@@ -223,13 +238,15 @@ with mlflow.start_run(run_name="logistic_regression_v1") as run:
     mlflow.log_figure(fig_roc, "roc_curve.png")
     plt.close(fig_roc)
 
-    # Log model with signature
-    signature = infer_signature(X_train.head(100), pipeline.predict(X_train.head(100)))
+    # Log model with signature. Serve predict_proba so the endpoint returns
+    # [P(False), P(True)] per row — the app needs a probability for what-if scoring.
+    signature = infer_signature(X_train.head(100), pipeline.predict_proba(X_train.head(100)))
     model_info = mlflow.sklearn.log_model(
         pipeline,
         name="logistic_regression_model",
         signature=signature,
         input_example=X_train.head(3),
+        pyfunc_predict_fn="predict_proba",
     )
 
     print(f"MLflow Run ID: {run.info.run_id}")
@@ -268,3 +285,59 @@ registered_version = mlflow.register_model(
 model_version = registered_version.version
 print(f"\nRegistered: {registered_model_name} (version {model_version})")
 print(f"Model URI: models:/{registered_model_name}/{model_version}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Deploy to Model Serving (what-if scoring for the app)
+from datetime import timedelta
+from mlflow.tracking import MlflowClient
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import NotFound
+from databricks.sdk.service.serving import (
+    EndpointCoreConfigInput, ServedEntityInput, TrafficConfig, Route,
+)
+
+# Point the champion alias at the new version, then roll the endpoint to the same version
+MlflowClient(registry_uri="databricks-uc").set_registered_model_alias(
+    registered_model_name, "champion", model_version
+)
+
+served_name = f"client-needs-attention-v{model_version}"
+served_entities = [ServedEntityInput(
+    name=served_name,
+    entity_name=registered_model_name,
+    entity_version=str(model_version),
+    workload_size="Small",
+    scale_to_zero_enabled=True,
+)]
+traffic_config = TrafficConfig(routes=[Route(served_model_name=served_name, traffic_percentage=100)])
+
+w = WorkspaceClient()
+try:
+    w.serving_endpoints.get(serving_endpoint)
+    endpoint_exists = True
+except NotFound:
+    endpoint_exists = False
+
+if endpoint_exists:
+    print(f"Updating endpoint {serving_endpoint} -> version {model_version} ...")
+    w.serving_endpoints.update_config_and_wait(
+        name=serving_endpoint,
+        served_entities=served_entities,
+        traffic_config=traffic_config,
+        timeout=timedelta(minutes=40),
+    )
+else:
+    print(f"Creating endpoint {serving_endpoint} (version {model_version}) ...")
+    w.serving_endpoints.create_and_wait(
+        name=serving_endpoint,
+        config=EndpointCoreConfigInput(served_entities=served_entities, traffic_config=traffic_config),
+        timeout=timedelta(minutes=40),
+    )
+
+# Smoke test: score the input example through the live endpoint
+resp = w.serving_endpoints.query(
+    name=serving_endpoint,
+    dataframe_records=X_test.head(3).to_dict("records"),
+)
+print(f"Endpoint {serving_endpoint} READY. Sample predictions: {resp.predictions}")

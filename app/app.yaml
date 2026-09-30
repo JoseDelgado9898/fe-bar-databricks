@@ -13,3 +13,5 @@ env:
     value: "5432"
   - name: PGSSLMODE
     value: "require"
+  - name: SERVING_ENDPOINT
+    valueFrom: serving-endpoint

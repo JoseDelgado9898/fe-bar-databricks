@@ -9,3 +9,4 @@ resources:
             notebook_path: ../ml/client_needs_attention.py
             base_parameters:
               catalog: ${var.catalog}
+              serving_endpoint: ${var.serving_endpoint_name}
